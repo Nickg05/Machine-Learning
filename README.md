@@ -215,5 +215,5 @@ The thesis: TRM with 3-5M params dramatically outperforms LLMs with 20-100x more
 ## Reference
 
 - [TRM: Less is More](https://arxiv.org/abs/2510.04871) -- Jolicoeur-Martineau et al.
-- [ViTRM](https://arxiv.org/abs/2603.19503) -- Akazan et al.
+- [TRM with Mamba-2 Attention Hybrid](https://arxiv.org/abs/2602.12078) -- Wang & Reid
 - [Official TRM code](https://github.com/SamsungSAILMontreal/TinyRecursiveModels)
