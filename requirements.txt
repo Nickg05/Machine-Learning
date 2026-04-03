@@ -28,3 +28,7 @@ argdantic>=0.6.0        # CLI argument parsing (wraps argparse with pydantic)
 pydantic>=2.0.0         # data validation (used by argdantic)
 huggingface_hub>=0.22.0 # downloading datasets/models from HuggingFace Hub
 
+peft>=0.10.0            # LoRA / QLoRA for LLM fine-tuning
+bitsandbytes>=0.43.0    # 4-bit quantization for QLoRA
+pyyaml>=6.0             # YAML config loading
+
