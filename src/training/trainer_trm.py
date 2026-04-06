@@ -1,5 +1,7 @@
+import csv
 import json
 import os
+import time
 
 import torch
 import torch.nn as nn
@@ -29,6 +31,7 @@ class TRMTrainer:
         train_loader: DataLoader,
         val_loader: DataLoader,
         config: ExperimentConfig,
+        resume_checkpoint: str = "",
     ):
         self.model = model
         self.train_loader = train_loader
@@ -36,6 +39,7 @@ class TRMTrainer:
         self.config = config
         self.tc = config.training
         self.device = torch.device(config.device if torch.cuda.is_available() else "cpu")
+        self.use_amp = self.device.type == "cuda"
 
         self.model.to(self.device)
 
@@ -48,6 +52,8 @@ class TRMTrainer:
 
         # Linear warmup scheduler
         self.global_step = 0
+        self.start_epoch = 0
+        self.best_acc = 0.0
 
         def lr_lambda(step):
             if step < self.tc.warmup_steps:
@@ -58,6 +64,10 @@ class TRMTrainer:
 
         self.loss_fn = StableMaxCrossEntropy(ignore_index=0)
         self.ema = EMA(model, decay=self.tc.ema_decay)
+
+        # Mixed precision scaler
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+
         self.carbon = CarbonTracker(
             f"{config.model.model_type.value}_train",
             output_dir=config.experiment_dir,
@@ -66,27 +76,64 @@ class TRMTrainer:
         os.makedirs(config.checkpoint_dir, exist_ok=True)
         os.makedirs(config.experiment_dir, exist_ok=True)
 
+        # Resume from checkpoint if provided
+        if resume_checkpoint and os.path.isfile(resume_checkpoint):
+            self._load_checkpoint(resume_checkpoint)
+
         if self.tc.use_wandb and WANDB_AVAILABLE:
             wandb.init(
                 project=self.tc.wandb_project,
                 config=config.model_dump(),
             )
 
-    def train(self) -> None:
-        self.carbon.start()
+        # CSV log for remote progress tracking
+        self.log_path = os.path.join(config.experiment_dir, f"{config.model.model_type.value}_train_log.csv")
 
-        best_acc = 0.0
-        for epoch in range(self.tc.epochs):
+    def _init_log(self) -> None:
+        mode = "a" if self.start_epoch > 0 and os.path.exists(self.log_path) else "w"
+        if mode == "w":
+            with open(self.log_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["epoch", "ce_loss", "q_mean", "steps_taken", "val_cell_acc", "val_puzzle_acc", "best_puzzle_acc", "elapsed_min"])
+
+    def _append_log(self, row: list) -> None:
+        with open(self.log_path, "a", newline="") as f:
+            csv.writer(f).writerow(row)
+
+    def _load_checkpoint(self, path: str) -> None:
+        print(f"Resuming from {path}")
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(ckpt["model_state_dict"])
+        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "ema_state_dict" in ckpt:
+            self.ema.load_state_dict(ckpt["ema_state_dict"])
+        self.global_step = ckpt.get("global_step", 0)
+        self.start_epoch = ckpt.get("epoch", 0) + 1
+        self.best_acc = ckpt.get("best_puzzle_acc", 0.0)
+        # Advance scheduler to match global_step
+        for _ in range(self.global_step):
+            self.scheduler.step()
+        print(f"Resumed at epoch {self.start_epoch}, step {self.global_step}, best_acc {self.best_acc:.4f}")
+
+    def train(self) -> None:
+        self._init_log()
+        self.carbon.start()
+        t_start = time.time()
+
+        best_acc = self.best_acc
+        for epoch in range(self.start_epoch, self.tc.epochs):
             metrics = self._train_epoch(epoch)
 
             if (epoch + 1) % self.tc.log_interval == 0:
                 val_metrics = self.evaluate()
+                elapsed = (time.time() - t_start) / 60.0
                 tqdm.write(
                     f"Epoch {epoch + 1}/{self.tc.epochs} | "
                     f"CE: {metrics['ce_loss']:.4f} | "
                     f"Q: {metrics['q_mean']:.3f} | "
                     f"Steps: {metrics['steps_taken']:.1f} | "
-                    f"Val Acc: {val_metrics['puzzle_acc']:.4f}"
+                    f"Val Acc: {val_metrics['puzzle_acc']:.4f} | "
+                    f"Time: {elapsed:.0f}min"
                 )
 
                 if self.tc.use_wandb and WANDB_AVAILABLE:
@@ -94,12 +141,18 @@ class TRMTrainer:
 
                 if val_metrics["puzzle_acc"] > best_acc:
                     best_acc = val_metrics["puzzle_acc"]
-                    self._save_checkpoint(epoch, "best.pt")
+                    self._save_checkpoint(epoch, "best.pt", best_acc)
+
+                self._append_log([
+                    epoch + 1, f"{metrics['ce_loss']:.4f}", f"{metrics['q_mean']:.3f}",
+                    f"{metrics['steps_taken']:.1f}", f"{val_metrics['cell_acc']:.4f}",
+                    f"{val_metrics['puzzle_acc']:.4f}", f"{best_acc:.4f}", f"{elapsed:.1f}",
+                ])
 
             if (epoch + 1) % self.tc.save_interval == 0:
-                self._save_checkpoint(epoch, f"epoch_{epoch + 1}.pt")
+                self._save_checkpoint(epoch, f"epoch_{epoch + 1}.pt", best_acc)
 
-        self._save_checkpoint(self.tc.epochs - 1, "latest.pt")
+        self._save_checkpoint(self.tc.epochs - 1, "latest.pt", best_acc)
         emissions = self.carbon.stop()
 
         results_path = os.path.join(self.config.experiment_dir, "training_results.json")
@@ -131,6 +184,7 @@ class TRMTrainer:
                 N_sup=self.tc.N_sup,
                 act_threshold=self.tc.act_threshold,
                 max_grad_norm=self.tc.max_grad_norm,
+                scaler=self.scaler if self.use_amp else None,
             )
 
             self.scheduler.step()
@@ -195,7 +249,7 @@ class TRMTrainer:
             "puzzle_acc": total_puzzle_correct / max(1, total_puzzles),
         }
 
-    def _save_checkpoint(self, epoch: int, filename: str) -> None:
+    def _save_checkpoint(self, epoch: int, filename: str, best_acc: float = 0.0) -> None:
         path = os.path.join(self.config.checkpoint_dir, filename)
         torch.save(
             {
@@ -205,6 +259,7 @@ class TRMTrainer:
                 "ema_state_dict": self.ema.state_dict(),
                 "config": self.config.model_dump(),
                 "global_step": self.global_step,
+                "best_puzzle_acc": best_acc,
             },
             path,
         )

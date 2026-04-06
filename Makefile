@@ -18,10 +18,18 @@ endif
 # ============================================================
 
 .PHONY: setup
-setup: ## Create venv and install all dependencies
+setup: ## Create venv and install all dependencies (CPU)
 	python -m venv .venv
-	$(PIP) install --upgrade pip
+	$(PYTHON) -m pip install --upgrade pip
 	$(PIP) install -r requirements.txt
+
+.PHONY: setup-cuda
+setup-cuda: ## Create venv and install with CUDA 12.4 GPU support
+	python -m venv .venv
+	$(PYTHON) -m pip install --upgrade pip
+	$(PIP) install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+	$(PIP) install -r requirements.txt
+	$(PYTHON) -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"NONE\"}')"
 
 .PHONY: setup-dev
 setup-dev: setup ## Setup + install dev tools
@@ -75,9 +83,36 @@ train-maze: ## Train TRM-Att on Maze-Hard
 train-llm: ## Fine-tune GPT-2 baseline with LoRA
 	$(PYTHON) main.py --mode train --config configs/llm_config.yaml
 
+.PHONY: train-llm-qwen
+train-llm-qwen: ## Fine-tune Qwen2.5-0.5B with LoRA
+	$(PYTHON) main.py --mode train --config configs/llm_qwen.yaml
+
+.PHONY: train-llm-smollm
+train-llm-smollm: ## Fine-tune SmolLM2-360M with LoRA
+	$(PYTHON) main.py --mode train --config configs/llm_smollm.yaml
+
+.PHONY: train-llm-llama
+train-llm-llama: ## Fine-tune Llama-3.2-1B with LoRA
+	$(PYTHON) main.py --mode train --config configs/llm_llama.yaml
+
+.PHONY: train-llm-all
+train-llm-all: train-llm train-llm-qwen train-llm-smollm train-llm-llama ## Fine-tune all 4 LLM baselines sequentially
+
 .PHONY: train-distill
 train-distill: ## Knowledge distillation (requires trained teacher)
-	$(PYTHON) main.py --mode distill --config configs/llm_config.yaml --checkpoint models/llm_latest.pt
+	$(PYTHON) main.py --mode distill --config configs/llm_config.yaml --checkpoint models/gpt2_latest.pt
+
+.PHONY: train-maze-fast
+train-maze-fast: ## Train TRM-Maze with augmented data + fewer epochs (~1-2 days)
+	$(PYTHON) main.py --mode train --config configs/trm_maze_fast.yaml
+
+.PHONY: resume-sudoku
+resume-sudoku: ## Resume TRM-Sudoku training from last checkpoint
+	$(PYTHON) main.py --mode train --config configs/trm_sudoku.yaml --resume models/latest.pt
+
+.PHONY: resume-maze
+resume-maze: ## Resume TRM-Maze training from last checkpoint
+	$(PYTHON) main.py --mode train --config configs/trm_maze.yaml --resume models/latest.pt
 
 # ============================================================
 # Evaluation
@@ -92,8 +127,20 @@ eval-maze: ## Evaluate best TRM-Maze checkpoint
 	$(PYTHON) main.py --mode eval --config configs/trm_maze.yaml --checkpoint models/best.pt
 
 .PHONY: eval-llm
-eval-llm: ## Evaluate LLM baseline
-	$(PYTHON) main.py --mode eval --config configs/llm_config.yaml --checkpoint models/llm_latest.pt
+eval-llm: ## Evaluate GPT-2 baseline
+	$(PYTHON) main.py --mode eval --config configs/llm_config.yaml --checkpoint models/gpt2_latest.pt
+
+.PHONY: eval-llm-qwen
+eval-llm-qwen: ## Evaluate Qwen2.5-0.5B baseline
+	$(PYTHON) main.py --mode eval --config configs/llm_qwen.yaml --checkpoint models/qwen2.5_0.5b_latest.pt
+
+.PHONY: eval-llm-smollm
+eval-llm-smollm: ## Evaluate SmolLM2-360M baseline
+	$(PYTHON) main.py --mode eval --config configs/llm_smollm.yaml --checkpoint models/smollm2_360m_latest.pt
+
+.PHONY: eval-llm-llama
+eval-llm-llama: ## Evaluate Llama-3.2-1B baseline
+	$(PYTHON) main.py --mode eval --config configs/llm_llama.yaml --checkpoint models/llama_3.2_1b_latest.pt
 
 # ============================================================
 # Verification & Testing

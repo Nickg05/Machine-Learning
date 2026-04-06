@@ -1,5 +1,7 @@
+import csv
 import json
 import os
+import time
 
 import torch
 import torch.nn as nn
@@ -88,19 +90,37 @@ class DistillationTrainer:
         self.carbon = CarbonTracker("distill_train", output_dir=config.experiment_dir)
         os.makedirs(config.checkpoint_dir, exist_ok=True)
 
+        self.log_path = os.path.join(config.experiment_dir, "distill_train_log.csv")
+
+    def _init_log(self) -> None:
+        with open(self.log_path, "w", newline="") as f:
+            csv.writer(f).writerow(["epoch", "loss", "val_puzzle_acc", "elapsed_min"])
+
+    def _append_log(self, row: list) -> None:
+        with open(self.log_path, "a", newline="") as f:
+            csv.writer(f).writerow(row)
+
     def train(self) -> None:
+        self._init_log()
         self.carbon.start()
+        t_start = time.time()
 
         for epoch in range(self.tc.epochs):
             metrics = self._train_epoch(epoch)
 
             if (epoch + 1) % self.tc.log_interval == 0:
                 val_metrics = self.evaluate()
+                elapsed = (time.time() - t_start) / 60.0
                 tqdm.write(
                     f"Distill Epoch {epoch + 1}/{self.tc.epochs} | "
                     f"Loss: {metrics['loss']:.4f} | "
-                    f"Val Acc: {val_metrics['puzzle_acc']:.4f}"
+                    f"Val Acc: {val_metrics['puzzle_acc']:.4f} | "
+                    f"Time: {elapsed:.0f}min"
                 )
+                self._append_log([
+                    epoch + 1, f"{metrics['loss']:.4f}",
+                    f"{val_metrics['puzzle_acc']:.4f}", f"{elapsed:.1f}",
+                ])
 
         self._save_checkpoint("distill_latest.pt")
         emissions = self.carbon.stop()

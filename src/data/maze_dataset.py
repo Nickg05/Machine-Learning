@@ -10,7 +10,7 @@ class MazeDataset(Dataset):
     """PyTorch Dataset for preprocessed Maze-Hard data.
 
     Loads .npy files produced by data/build_maze_dataset.py.
-    Token values: 1-4 (CHARSET '#',' ','S','G','o' mapped to 1-4), 0=pad.
+    Token values: 1-5 (CHARSET '#'=1,' '=2,'S'=3,'G'=4,'o'=5), 0=pad.
     Labels masked: positions where input==label set to 0 (ignore).
     """
 

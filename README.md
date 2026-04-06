@@ -1,6 +1,6 @@
 # Tiny Recursive Model (TRM) -- Puzzle Solving
 
-Comparing Tiny Recursive Models (~3-5M params) against fine-tuned LLMs (82-1100M params) on structured reasoning tasks (Sudoku-Extreme, Maze-Hard). TRMs use recursive weight-sharing to iteratively refine solutions, dramatically outperforming LLMs while using orders of magnitude less energy.
+Comparing Tiny Recursive Models (~6-8M params) against fine-tuned LLMs (124M-1.2B params) on structured reasoning tasks (Sudoku-Extreme, Maze-Hard). TRMs use recursive weight-sharing to iteratively refine solutions, dramatically outperforming LLMs while using orders of magnitude less energy.
 
 **Module:** UFCFAS-15-2 Machine Learning | **Team:** Ahmed AlShamy, Armin Ghaseminejad, Nickolas Greiner
 
@@ -33,13 +33,13 @@ Deep Supervision (N_sup=16 steps, each a separate optimizer step)
 
 | Model | Params | Sequence Processing | Task |
 |-------|--------|-------------------|------|
-| TRM-MLP | ~3.3M | MLP-Mixer (token mixing) | Sudoku (L=81) |
-| TRM-Att | ~5.1M | Self-Attention + RoPE | Maze (L=900) |
+| TRM-MLP | ~6.4M | MLP-Mixer (token mixing) | Sudoku (L=81) |
+| TRM-Att | ~8.4M | Self-Attention + RoPE | Maze (L=900) |
 
 ### Building Blocks
 
 - **RMSNorm** (post-norm: applied AFTER residual addition)
-- **SwiGLU** FFN: `W2(SiLU(W1(x)) * W3(x))`, no bias anywhere
+- **SwiGLU** FFN: `W2(SiLU(W1(x)) * W3(x))`, no bias anywhere, expansion=4 (ff_hidden=2048)
 - **Rotary Position Embedding (RoPE)** for maze attention variant
 - **Stable-max cross-entropy** for numerical stability
 
@@ -57,13 +57,13 @@ Machine-Learning/
 |   |   +-- trm_block.py           # Shared 2-layer block (attention or mixer)
 |   |   +-- recursion.py           # latent_recursion, deep_recursion, deep_supervision
 |   |   +-- trm_sudoku.py          # TRM-MLP (sudoku) + TRM-Att (maze)
-|   |   +-- baseline_llm.py        # GPT-2 / TinyLlama + LoRA wrapper
+|   |   +-- baseline_llm.py        # GPT-2 / Qwen / SmolLM / Llama + LoRA wrapper
 |   |   +-- distilled_llm.py       # Student transformer + distillation loss
 |   +-- data/
 |   |   +-- sudoku_dataset.py      # PyTorch Dataset for sudoku .npy files
 |   |   +-- maze_dataset.py        # PyTorch Dataset for maze .npy files
 |   +-- training/
-|   |   +-- trainer_trm.py         # Deep supervision + ACT + EMA + CodeCarbon
+|   |   +-- trainer_trm.py         # Deep supervision + ACT + EMA + AMP + resume
 |   |   +-- trainer_llm.py         # LLM fine-tuning loop
 |   |   +-- trainer_distill.py     # Knowledge distillation loop
 |   |   +-- ema.py                 # Exponential Moving Average
@@ -77,35 +77,43 @@ Machine-Learning/
 +-- configs/
 |   +-- trm_sudoku.yaml            # TRM-MLP hyperparameters
 |   +-- trm_maze.yaml              # TRM-Att hyperparameters
-|   +-- llm_config.yaml            # LLM baseline config
+|   +-- trm_maze_fast.yaml         # TRM-Att with fewer epochs (for augmented data)
+|   +-- llm_config.yaml            # GPT-2 + LoRA config
+|   +-- llm_qwen.yaml              # Qwen2.5-0.5B + LoRA config
+|   +-- llm_smollm.yaml            # SmolLM2-360M + LoRA config
+|   +-- llm_llama.yaml             # Llama-3.2-1B + LoRA config
++-- scripts/
+|   +-- auto_push.sh               # Auto-commit/push training logs hourly
++-- .github/workflows/
+|   +-- training-notify.yml        # GitHub Action: post training stats on push
 +-- main.py                        # CLI entrypoint (train / eval / distill)
 +-- Makefile                       # Shortcuts for common tasks
 +-- models/                        # Saved checkpoints
-+-- experiments/                   # CodeCarbon logs
++-- experiments/                   # CodeCarbon logs + training CSV logs
 +-- results/                       # Evaluation outputs
 ```
 
 ## Setup
 
-**Requirements:** Python 3.10+, pip
+**Requirements:** Python 3.10+, NVIDIA GPU recommended
 
 ```bash
-# Create venv and install dependencies
+# Setup with CUDA GPU support (recommended)
+make setup-cuda
+
+# Or CPU-only setup
 make setup
 
-# Or manually:
-python -m venv .venv
-.venv/Scripts/activate        # Windows
-# source .venv/bin/activate   # Linux/Mac
-pip install -r requirements.txt
+# Verify everything works
+make verify
 ```
 
 ## Quick Start
 
 ```bash
 # 1. Preprocess data (downloads from HuggingFace)
-make data-sudoku              # Full dataset
-make data-sudoku-small        # 100-sample subset for testing
+make data-sudoku              # 1K train / 423K test (matches paper)
+make data-maze                # 1K train / 1K test
 
 # 2. Train TRM on Sudoku
 make train-sudoku
@@ -114,67 +122,57 @@ make train-sudoku
 make eval-sudoku
 ```
 
-## Running Manually
-
-### Data Preprocessing
-
-Data scripts must be run from the `data/` directory (they use `from common import ...`).
-Override `--output-dir` so data lands at `data/<dataset>` relative to project root:
+## Training All Models
 
 ```bash
-cd data
+# TRM models
+make train-sudoku             # TRM-MLP on Sudoku-Extreme (~12-14 hrs on RTX 4070)
+make train-maze               # TRM-Att on Maze-Hard (~3-4 days on RTX 4070)
 
-# Sudoku-Extreme (full dataset, no augmentation)
-python build_sudoku_dataset.py --output-dir sudoku-extreme-full
+# LLM baselines (all 4 sequentially, ~4-6 hrs total)
+make train-llm-all
 
-# Sudoku with 1000x augmentation (for full training)
-python build_sudoku_dataset.py --output-dir sudoku-extreme-full --num-aug 1000
+# Or individually:
+make train-llm                # GPT-2 (124M)
+make train-llm-qwen           # Qwen2.5-0.5B (494M)
+make train-llm-smollm         # SmolLM2-360M (360M)
+make train-llm-llama          # Llama-3.2-1B (1.2B)
 
-# Small subset for quick testing
-python build_sudoku_dataset.py --output-dir sudoku-extreme-full --subsample-size 100
-
-# Maze-Hard with dihedral augmentation
-python build_maze_dataset.py --output-dir maze-30x30-hard-1k --aug
+# Knowledge distillation (requires trained GPT-2 checkpoint)
+make train-distill
 ```
 
-**Output format:** Each dataset produces `train/` and `test/` directories containing:
-- `all__inputs.npy` -- input token IDs [N, seq_len]
-- `all__labels.npy` -- target labels [N, seq_len]
-- `dataset.json` -- metadata (vocab_size, seq_len, etc.)
+### Resuming Training
 
-### Training
+If training crashes, resume from the last checkpoint:
 
 ```bash
-# TRM-MLP on Sudoku (default config)
-python main.py --mode train --config configs/trm_sudoku.yaml
-
-# TRM-Att on Maze
-python main.py --mode train --config configs/trm_maze.yaml
-
-# LLM baseline (GPT-2 + LoRA)
-python main.py --mode train --config configs/llm_config.yaml
-
-# Knowledge distillation (requires trained teacher checkpoint)
-python main.py --mode distill --config configs/llm_config.yaml --checkpoint models/llm_latest.pt
+make resume-sudoku            # Resume from models/latest.pt
+make resume-maze
 ```
 
-### Evaluation
+### Remote Progress Monitoring
+
+Training logs are written to `experiments/*_train_log.csv`. To auto-push every hour:
 
 ```bash
-python main.py --mode eval --config configs/trm_sudoku.yaml --checkpoint models/best.pt
+# Run in a separate terminal
+bash scripts/auto_push.sh
 ```
+
+A GitHub Action posts training stats to a GitHub Issue on each push. Subscribe to the issue for phone notifications via the GitHub mobile app.
 
 ## Data Encoding
 
 ### Sudoku
 - **Vocab:** 11 tokens (pad=0, digits 0-9 shifted to tokens 1-10)
 - **Grid:** 9x9 flattened to 81 tokens (row-major)
-- **Blanks:** digit '0' becomes token 1 after +1 offset
-- **Loss mask:** pre-filled cells (input == label) ignored in loss
+- **Train:** 1,000 puzzles (17 given clues each) | **Test:** 422,786 puzzles
 
 ### Maze
-- **Vocab:** 5 tokens (pad=0, '#'=1, ' '=2, 'S'=3, 'G'=4, 'o'=path)
+- **Vocab:** 6 tokens (pad=0, '#'=1, ' '=2, 'S'=3, 'G'=4, 'o'=5)
 - **Grid:** 30x30 flattened to 900 tokens
+- **Train:** 1,000 mazes (shortest path >110 steps) | **Test:** 1,000 mazes
 - **Augmentation:** 8 dihedral transforms (rotations + flips)
 
 ## Training Hyperparameters
@@ -182,7 +180,7 @@ python main.py --mode eval --config configs/trm_sudoku.yaml --checkpoint models/
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | Hidden dim (D) | 512 | Shared block width |
-| FF hidden | 2048 | SwiGLU intermediate |
+| FF hidden | 2048 | SwiGLU intermediate (expansion=4) |
 | Inner recursions (n) | 6 | Latent refinement steps |
 | Outer recursions (T) | 3 | Only last pass has gradients |
 | Supervision steps (N_sup) | 16 | Max, ACT can stop early |
@@ -192,17 +190,21 @@ python main.py --mode eval --config configs/trm_sudoku.yaml --checkpoint models/
 | Weight decay | 1.0 | TRM only; LLM uses 0.01 |
 | EMA decay | 0.999 | Applied before evaluation |
 | Effective batch | 768 | batch_size * grad_accum |
+| Mixed precision | Auto | AMP enabled on CUDA GPUs |
 
 ## Models Compared
 
 | Model | Type | Params | Expected Sudoku | Expected Maze |
 |-------|------|--------|----------------|---------------|
-| TRM-MLP | Recursive (MLP-Mixer) | ~3.3M | ~87% | -- |
-| TRM-Att | Recursive (Attention) | ~5.1M | -- | ~85% |
-| Fine-tuned LLM | GPT-2 + LoRA | 124M (0.8M trainable) | ~0% | ~0% |
-| Distilled LLM | Small transformer | ~2.4M | ~0% | ~0% |
+| TRM-MLP | Recursive (MLP-Mixer) | ~6.4M | ~87% | -- |
+| TRM-Att | Recursive (Attention) | ~8.4M | -- | ~85% |
+| GPT-2 + LoRA | Fine-tuned LLM | 124M (0.8M trainable) | ~0% | -- |
+| Qwen2.5-0.5B + LoRA | Fine-tuned LLM | 494M | ~0% | -- |
+| SmolLM2-360M + LoRA | Fine-tuned LLM | 360M | ~0% | -- |
+| Llama-3.2-1B + LoRA | Fine-tuned LLM | 1.2B | ~0% | -- |
+| Distilled LLM | Small transformer | ~2.4M | ~0% | -- |
 
-The thesis: TRM with 3-5M params dramatically outperforms LLMs with 20-100x more parameters on structured reasoning, at a fraction of the energy cost.
+The thesis: TRM with 6-8M params dramatically outperforms LLMs with 20-200x more parameters on structured reasoning, at a fraction of the energy cost.
 
 ## Key Implementation Details
 
@@ -211,6 +213,8 @@ The thesis: TRM with 3-5M params dramatically outperforms LLMs with 20-100x more
 3. **EMA before eval:** Always use EMA shadow weights for evaluation (the trainer handles this automatically)
 4. **No bias anywhere:** All linear layers in the TRM use `bias=False`
 5. **Stable-max loss:** Custom cross-entropy that clips log-sum-exp for numerical stability
+6. **Mixed precision:** AMP auto-enabled on CUDA for ~1.5-2x speedup
+7. **Checkpoint resume:** Training can resume from any checkpoint via `--resume`
 
 ## Reference
 

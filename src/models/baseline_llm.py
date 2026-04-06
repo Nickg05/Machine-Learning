@@ -40,8 +40,15 @@ class BaselineLLM(nn.Module):
             base_model = prepare_model_for_kbit_training(base_model)
 
         # Determine target modules based on model architecture
-        if "gpt2" in model_name.lower():
+        name_lower = model_name.lower()
+        if "gpt2" in name_lower:
             target_modules = ["c_attn", "c_proj"]
+        elif "qwen" in name_lower:
+            target_modules = ["q_proj", "k_proj", "v_proj"]
+        elif "smollm" in name_lower:
+            target_modules = ["q_proj", "k_proj", "v_proj"]
+        elif "llama" in name_lower:
+            target_modules = ["q_proj", "v_proj"]
         else:
             target_modules = ["q_proj", "v_proj"]
 

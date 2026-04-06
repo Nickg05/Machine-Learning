@@ -81,6 +81,7 @@ def deep_supervision_step(
     N_sup: int = 16,
     act_threshold: float = 0.5,
     max_grad_norm: float = 1.0,
+    scaler=None,
 ) -> dict:
     """Full deep supervision training step.
 
@@ -96,6 +97,7 @@ def deep_supervision_step(
         ema: Optional EMA wrapper.
         n, T, N_sup, act_threshold: Recursion hyperparameters.
         max_grad_norm: Gradient clipping norm.
+        scaler: Optional torch.amp.GradScaler for mixed precision.
 
     Returns:
         Dict with training metrics.
@@ -103,6 +105,7 @@ def deep_supervision_step(
     model.train()
     device = inputs.device
     B = inputs.shape[0]
+    use_amp = scaler is not None
 
     y = model.y_init.expand(B, -1, -1).clone()
     z = model.z_init.expand(B, -1, -1).clone()
@@ -116,24 +119,32 @@ def deep_supervision_step(
 
         # Recompute x each step: optimizer updates embedding weights,
         # and we need a fresh graph for each backward() call.
-        x = model.embedding(inputs)
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            x = model.embedding(inputs)
 
-        (y, z), logits, q = deep_recursion(
-            model.block, model.output_head, model.q_head, x, y, z, n, T
-        )
+            (y, z), logits, q = deep_recursion(
+                model.block, model.output_head, model.q_head, x, y, z, n, T
+            )
 
-        ce_loss = loss_fn(logits, labels)
+            ce_loss = loss_fn(logits, labels)
 
-        # Correctness: all non-ignored positions must match
-        mask = labels != 0
-        correct_per_sample = ((logits.argmax(-1) == labels) | ~mask).all(dim=-1).float()
-        q_loss = F.binary_cross_entropy(q, correct_per_sample)
+            # Correctness: all non-ignored positions must match
+            mask = labels != 0
+            correct_per_sample = ((logits.argmax(-1) == labels) | ~mask).all(dim=-1).float()
+            q_loss = F.binary_cross_entropy(q, correct_per_sample)
 
-        loss = ce_loss + q_loss
-        loss.backward()
+            loss = ce_loss + q_loss
 
-        nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-        optimizer.step()
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            optimizer.step()
 
         if ema is not None:
             ema.update()

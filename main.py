@@ -12,6 +12,7 @@ class RunConfig(BaseModel):
     config: str = "configs/trm_sudoku.yaml"
     mode: str = "train"  # train | eval | distill
     checkpoint: str = ""
+    resume: str = ""  # path to checkpoint to resume training from
     seed: int = 42
 
 
@@ -22,7 +23,7 @@ def main(cfg: RunConfig):
     set_seed(cfg.seed)
 
     if cfg.mode == "train":
-        _run_train(config)
+        _run_train(config, cfg.resume)
     elif cfg.mode == "eval":
         _run_eval(config, cfg.checkpoint)
     elif cfg.mode == "distill":
@@ -31,7 +32,7 @@ def main(cfg: RunConfig):
         raise ValueError(f"Unknown mode: {cfg.mode}")
 
 
-def _run_train(config: ExperimentConfig) -> None:
+def _run_train(config: ExperimentConfig, resume: str = "") -> None:
     model_type = config.model.model_type
 
     if model_type == ModelType.TRM_SUDOKU:
@@ -53,7 +54,7 @@ def _run_train(config: ExperimentConfig) -> None:
             batch_size=config.training.batch_size,
             num_workers=config.data.num_workers,
         )
-        trainer = TRMTrainer(model, train_loader, val_loader, config)
+        trainer = TRMTrainer(model, train_loader, val_loader, config, resume_checkpoint=resume)
         trainer.train()
 
     elif model_type == ModelType.TRM_MAZE:
@@ -75,7 +76,7 @@ def _run_train(config: ExperimentConfig) -> None:
             batch_size=config.training.batch_size,
             num_workers=config.data.num_workers,
         )
-        trainer = TRMTrainer(model, train_loader, val_loader, config)
+        trainer = TRMTrainer(model, train_loader, val_loader, config, resume_checkpoint=resume)
         trainer.train()
 
     elif model_type == ModelType.LLM_FINETUNE:
